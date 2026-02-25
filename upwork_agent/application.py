@@ -2,8 +2,9 @@ from utils.session import Session
 from utils.constants import upwork_login_url, cloudfare_challenge_div_id, upwork_url, home_url, send_job_updates_webhook_url, send_job_updates_webhook_url_test
 from utils.models import Proposal
 
-from db_utils.access_db import get_proposal_by_url, update_proposal_by_url
-from db_utils.queue_manager import update_task_status
+from db.proposals import get_proposal_by_url, update_proposal_by_url
+from db.queue_manager import update_task_status
+from db.jobs import change_proposal_generation_status
 
 from typing import Literal, Optional
 import asyncio
@@ -78,6 +79,8 @@ class ApplicationSession(Session):
             await self.page.goto(home_url)
             return True
         except Exception as e:
+            print("taking screenshot of error")
+            await self.page.take_screenshot(filename=f"screenshots/application_session_error_{self.task_id}.png")
             await self.close_client()
             await self.page.goto(home_url)
             return False
@@ -89,17 +92,30 @@ class ApplicationSession(Session):
             await asyncio.sleep(1)
             return True
         except Exception as e:
-            self.update_status("Failed", f"Error reaching job page: {e}")
-            await self.send_status()
-            self.print_status()
-            return False
+            warning_elements = await self.page.get_all_elements(selector = 'div.air3-alert-content')
+            if len(warning_elements) > 0:
+                for element in warning_elements:
+                    warning_text = await element.text_content()
+                    if "no longer available" in warning_text.lower():
+                        self.update_status("Failed", "Job is no longer available")
+                        await self.send_status()
+                        self.print_status()
+                        return True
+            else:
+                await self.page.take_screenshot(filename=f"screenshots/reach_bidding_page_error_{self.task_id}.png")
+                self.update_status("Failed", f"Error reaching job page: {e}")
+                await self.send_status()
+                self.print_status()
+                return False
     
     async def get_proposal(self):
         try:
-            existing_proposal, job_type = await get_proposal_by_url(self.job_url)
+            existing_proposal, job_type, profile, _ = await get_proposal_by_url(self.job_url)
             self.proposal = existing_proposal
             if existing_proposal:
                 self.proposal_type = job_type
+                self.profile = profile
+                print(self.profile)
                 print(self.proposal_type)
             else:
                 self.update_status("Failed", "No existing proposal found for the job URL")
@@ -130,6 +146,12 @@ class ApplicationSession(Session):
                 await self.send_status()
                 self.print_status()
                 return False
+            job_update_status, job_update_msg = await change_proposal_generation_status(self.job_url, "applied")
+            if not job_update_status:
+                self.update_status("Failed", f"Job status update error - {job_update_msg}")
+                await self.send_status()
+                self.print_status()
+                return False
             self.print_status()
             return True
         except Exception as e:
@@ -145,10 +167,21 @@ class ApplicationSession(Session):
             self.print_status()
             return False
         try:
+            profile_change_status = await self.change_profile()
+            if not profile_change_status:
+                return False
             if self.proposal_type == "Fixed Price":
                 return True
             cover_letter = self.proposal.cover_letter
+            await asyncio.sleep(3)
             await self.page.copy_to_clipboard(cover_letter)
+            await self.page.wait_for_element('textarea[aria-labelledby="cover_letter_label"]')
+            textbox = await self.page.get_element(selector = 'textarea[aria-labelledby="cover_letter_label"]')
+            if not textbox:
+                self.update_status("Failed", "Cover letter textbox not found")
+                await self.send_status()
+                self.print_status()
+                return False
             await self.page.paste_from_clipboard(selector = 'textarea[aria-labelledby="cover_letter_label"]')
             
             questions_and_answers = self.question_answer_parser()
@@ -163,6 +196,8 @@ class ApplicationSession(Session):
                     await self.page.copy_to_clipboard(questions_and_answers[question_in_page.strip()])
                     await self.page.paste_from_clipboard(selector = text_area)
             self.applied = True 
+            self.update_status("Success", "Applied for job successfully")
+            await self.send_status()
             self.print_status()
             return True
         except Exception as e:
@@ -170,6 +205,52 @@ class ApplicationSession(Session):
             await self.send_status()
             self.print_status()
             return False
+        
+    async def change_profile(self):
+        if self.profile == "general_profile":
+            return True
+        else:
+            try:
+                dropdown_locator = self.page.locator('div.fe-proposal-settings-special-profile')
+                try:
+                    await dropdown_locator.wait_for(state="visible", timeout=5000)
+                    dropdown_found = True
+                except Exception as e:
+                    dropdown_found = False
+                if not dropdown_found:
+                    self.update_status("Failed", "Special profile dropdown not found on page")
+                    await self.send_status()
+                    self.print_status()
+                    return True
+                else:
+                    change_profile_element = await self.page.get_element(selector = 'div.fe-proposal-settings-special-profile')
+                    dropdown_toggle = await change_profile_element.query_selector('div[data-test="dropdown-toggle"]')
+                    print("found dropdown toggle")
+                    if dropdown_toggle:
+                        await self.page.click(dropdown_toggle)
+                        await asyncio.sleep(1)
+                        options_list = await self.page.get_element(selector = 'ul#dropdown-menu')
+                        options = await options_list.query_selector_all('li[role="option"] span.air3-menu-item-text > span')
+                        print(f"Found {len(options)} profile options in dropdown")
+                        for option in options:
+                            if await option.inner_text().strip() == "Machine Learning":
+                                await self.page.click(option)
+                                await asyncio.sleep(1)
+                                if await change_profile_element.query_selector('div.air3-dropdown-toggle-title'):
+                                    selected_option = await change_profile_element.query_selector('div.air3-dropdown-toggle-title').inner_text().strip()
+                                    if selected_option == "Machine Learning":
+                                        return True
+                                    else:
+                                        print(f"Profile selection failed, expected 'Machine Learning' but got '{selected_option}'")
+                                        return False
+                    else:
+                        await self.page.take_screenshot(filename=f"screenshots/profile_change_error_{self.task_id}.png")
+                        print("Dropdown toggle not found in change profile element")
+                        return False
+            except Exception as e:
+                await self.page.take_screenshot(filename=f"screenshots/profile_change_error_{self.task_id}.png")
+                print(f"Error changing profile: {e}")
+                return False
         
     def question_answer_parser(self):
         q_a_dict = {}

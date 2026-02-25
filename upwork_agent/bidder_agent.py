@@ -1,13 +1,19 @@
+import json
 from dotenv import load_dotenv
+import traceback
 
 from langchain.chat_models import init_chat_model
 from langchain_postgres import PGVector
 from langgraph.graph import StateGraph
 
+from db.jobs import get_job_by_url, change_proposal_generation_status
+from state import AppState
 from utils.models import *
 from rag_utils.embed_data import DB_CONNECTION_STRING, embedding_model
 
 from langchain_core.messages import SystemMessage, HumanMessage
+
+from db.proposals import add_proposal
 
 load_dotenv()
     
@@ -210,7 +216,7 @@ def generate_search_query(state:State):
         "rag_query":response.content
         }
     
-def generate_propsal(state:State):
+def generate_proposal(state:State):
     project_details = state.get("project_details", "")
     retrieved_projects = state.get("retrieved_projects", "")
     PROPOSAL_SYSTEM_PROMPT = state.get("proposal_system_prompt") or PROPOSAL_SYSTEM_PROMPT_BACKUP
@@ -227,15 +233,16 @@ def build_bidder_agent()->StateGraph:
     graph_builder = StateGraph(State)
     graph_builder.add_node(generate_search_query)
     graph_builder.add_node(retrieve)
-    graph_builder.add_node(generate_propsal)
+    graph_builder.add_node(generate_proposal)
     graph_builder.set_entry_point("generate_search_query")
     graph_builder.add_edge("generate_search_query", "retrieve")
-    graph_builder.add_edge("retrieve", "generate_propsal")
-    graph_builder.set_finish_point("generate_propsal")
+    graph_builder.add_edge("retrieve", "generate_proposal")
+    graph_builder.set_finish_point("generate_proposal")
     graph = graph_builder.compile()
     return graph
 
 async def call_proposal_generator_agent(agent:StateGraph, project_description:str, proposal_system_prompt:str = None):
+    print(proposal_system_prompt)
     initial_state:State = {
         "messages":[HumanMessage(content=f"The project details are given below:\n{project_description}")],
         "project_details":project_description,
@@ -251,3 +258,30 @@ async def call_proposal_generator_agent(agent:StateGraph, project_description:st
     }
     
     return response, generated_proposal
+
+async def generate_proposal_for_job(state:AppState, job_url:str):
+    try:
+        job_uuid, job_details = await get_job_by_url(job_url=job_url)
+        if not job_details:
+            return {"status" : "Failed", "message" : "Job details not found in database."}
+        job_type = job_details.get("job_type","Unknown")
+        print(f"Generating proposal for job type: {job_type}")
+        job_details = json.dumps(job_details)
+        print(f"Job Details: {job_details}")
+        if state.proposal_prompt_changed:
+            async with state.prompt_lock:
+                if state.proposal_prompt_changed:
+                    state.proposal_system_prompt = await state.prompt_archive.get_active_prompt("proposal")
+                    state.proposal_prompt_changed = False
+        try:
+            proposal, proposal_model = await call_proposal_generator_agent(state.bidder_agent, job_details, proposal_system_prompt=state.proposal_system_prompt)
+            await change_proposal_generation_status(job_url, "generated")
+        except Exception as e:
+            print(f"Error generating proposal: {e}")
+        response = await add_proposal(uuid = job_uuid,job_url=job_url, job_type=job_type, proposal = proposal_model, applied=False)
+        if response:
+            print(f"Proposal generated and stored for job {job_url}")
+        else:
+            print(f"Failed to store proposal for job {job_url}")
+    except Exception as e:
+        traceback.print_exc()

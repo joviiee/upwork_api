@@ -5,8 +5,8 @@ from utils.session import Session
 from utils.exceptions import ScraperError, PrivateProfileError
 from utils.models import FinalJobPayload
 from utils.job_filter import JobFilter
-from db_utils.access_db import add_job
-from db_utils.queue_manager import update_task_status
+from db.jobs import add_job
+from db.queue_manager import update_task_status
 
 
 from nyx.page import NyxPage
@@ -60,7 +60,7 @@ class ScraperSession(Session):
                     return False
                 await asyncio.sleep(2)
             self.update_status("Success", f"Scraping session completed. {self.job_counter.get_count()} new jobs found.")
-            await self.send_status()
+            # await self.send_status()
             self.print_status()
             await update_task_status(self.task_id, "Done")
             await self.close_client()
@@ -73,7 +73,7 @@ class ScraperSession(Session):
             print(e)
             traceback.print_exc()
             self.update_status("Failed", f"Error in scraping session: {e}")
-            await self.send_status()
+            # await self.send_status()
             self.print_status()
             await self.close_client()
             await self.page.goto(home_url)
@@ -82,6 +82,10 @@ class ScraperSession(Session):
     async def scrape_job_page(self):
         try:
             self.job_details = {}
+            
+            title = await self.page.get_text_content('div.job-details-content h4 span')
+            print(f"Job title: {title}")
+            self.job_details["title"] = title.strip() if title else "N/A"
             
             client_location = await self.page.get_text_content('li[data-qa="client-location"] strong')
             self.job_details["client_location"] = client_location.strip() if client_location else "N/A"
@@ -103,11 +107,14 @@ class ScraperSession(Session):
             print(f"Payment verified: {payment_verified}")
             self.job_details["payment_verified"] = payment_verified
             
-            summary_element = await self.page.get_all_elements('div[data-test="Description"] p')
+            summary_element = await self.page.get_all_elements('div.job-details-content p.multiline-text')
+            print(f"Summary elts : {summary_element}")
             summary = ""
             for element in summary_element:
                 summary_chunk = await self.page.get_text_content(element)
+                print(summary_chunk)
                 summary += summary_chunk.strip() + " "
+            print(f"Summary : {summary}")
             self.job_details["summary"] = summary.strip()
             
             duration_type_elements = await self.page.get_all_elements('div[data-cy*="duration"]')
@@ -196,7 +203,7 @@ class ScraperSession(Session):
             uuid = await link_div.get_attribute('data-ev-job-uid')
             uuid = int(uuid) if uuid and uuid.isdigit() else None
             if not link:
-                self.send_status("Failed", "Problem extracting link ... \nMaybe the website structure has changed")
+                # self.send_status("Failed", "Problem extracting link ... \nMaybe the website structure has changed")
                 self.print_status()
                 return False
             link = upwork_url + link
@@ -217,18 +224,18 @@ class ScraperSession(Session):
             try:
                 await self.page.click(link_div, wait_for='li[data-qa="client-location"] strong')
             except Exception as e:
-                self.send_status("Failed",f"{e}")
+                # self.send_status("Failed",f"{e}")
                 self.print_status()
                 continue
             
             try:
                 scrape_success = await self.scrape_job_page()
             except PrivateProfileError:
-                self.send_status("Failed", f"Private job posting or structure changed.\nSkipping job {link}")
+                # self.send_status("Failed", f"Private job posting or structure changed.\nSkipping job {link}")
                 self.print_status()
                 continue
             except Exception as e:
-                self.send_status("Failed", f"Error scraping job page: {e}\nSkipping job {link}")
+                # self.send_status("Failed", f"Error scraping job page: {e}\nSkipping job {link}")
                 self.print_status()
                 continue
                 
@@ -249,24 +256,24 @@ class ScraperSession(Session):
             print(f"Job already exists in db - {link}")
             return True
         elif not job_update_status:
-            await self.send_status("Failed", f"Database update error - {msg}")
+            # await self.send_status("Failed", f"Database update error - {msg}")
             self.print_status()
             return False
-        else:
-            self.payload.status = "Done"
-            self.payload.category = category
-            self.payload.url = link
-            self.payload.job_details = self.job_details
+        # else:
+        #     self.payload.status = "Done"
+        #     self.payload.category = category
+        #     self.payload.url = link
+        #     self.payload.job_details = self.job_details
             
-            sent_status = await self.send_payload()
-            if not sent_status:
-                await self.send_status()
-                self.print_status()
-                return False
-            else:
-                self.job_counter.increment()
-                print(f"Job {self.job_counter.get_count()} ------ {self.job_details}")  
-                return True     
+        #     sent_status = await self.send_payload()
+        #     if not sent_status:
+        #         # await self.send_status()
+        #         self.print_status()
+        #         return False
+        #     else:
+        #         self.job_counter.increment()
+        #         print(f"Job {self.job_counter.get_count()} ------ {self.job_details}")  
+        #         return True     
         
     async def scrape_login_page(self):
         best_match_button = await self.page.get_element('button[data-test="tab-best-matches"]')
@@ -284,7 +291,7 @@ class ScraperSession(Session):
                 uuid = await link_div.get_attribute('data-ev-opening_uid')
                 uuid = int(uuid) if uuid and uuid.isdigit() else None
                 if not link:
-                    await self.send_status("Failed", "Problem extracting link ... \nMaybe the website structure has changed")
+                    # await self.send_status("Failed", "Problem extracting link ... \nMaybe the website structure has changed")
                     self.print_status()
                     return False
                 link = upwork_url + link
@@ -301,16 +308,16 @@ class ScraperSession(Session):
                 try:
                     await self.page.click(link_div, wait_for='li[data-qa="client-location"] strong')
                 except Exception as e:
-                    self.send_status("Failed",f"Error clicking job link: {e}")
+                    # self.send_status("Failed",f"Error clicking job link: {e}")
                     continue
                 try:
                     scrape_success = await self.scrape_job_page()
                 except PrivateProfileError:
-                    self.send_status("Failed", f"Private job posting or structure changed.\nSkipping job {link}")
+                    # self.send_status("Failed", f"Private job posting or structure changed.\nSkipping job {link}")
                     self.print_status()
                     continue
                 except Exception as e:
-                    self.send_status("Failed", f"Error scraping job page: {e}\nSkipping job {link}")
+                    # self.send_status("Failed", f"Error scraping job page: {e}\nSkipping job {link}")
                     self.print_status()
                     continue
                 
@@ -321,7 +328,8 @@ class ScraperSession(Session):
                 await self.page.go_back()
                 await asyncio.sleep(2)
         else:
-            self.send_status("Failed", "Best Match tab not found on login page.")
+            # self.send_status("Failed", "Best Match tab not found on login page.")
+            self.print_status()
         return True             
                 
     def get_latest_links(self):

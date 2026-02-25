@@ -11,7 +11,7 @@ from langchain_postgres import PGVector
 from langchain.schema import Document
 from langchain_openai import OpenAIEmbeddings
 
-from db_utils.db_pool import get_pool,close_pool, init_pool, DB_CONNECTION_STRING, \
+from db.pool import get_pool,close_pool, init_pool, DB_CONNECTION_STRING, \
     POSTGRES_USER, POSTGRES_PASSWORD_RAW, POSTGRES_DB, POSTGRES_HOST
 
 load_dotenv()
@@ -76,9 +76,9 @@ def retrieve_similar_documents(query:str, top_k:int=5):
     
 def clear_all_pgvector_data():
     conn = psycopg2.connect(
-    dbname=dbname,
-    user=username,
-    password=password,
+    dbname=POSTGRES_DB,
+    user=POSTGRES_USER,
+    password=POSTGRES_PASSWORD_RAW,
     host="localhost",
     port=5432
     )

@@ -3,7 +3,7 @@ import asyncio
 import json
 from asyncpg.utils import _quote_ident
 
-from db_utils.db_pool import get_pool,close_pool, init_pool
+from db.pool import get_pool,close_pool, init_pool
 
 async def create_queue_table():
     try:
@@ -62,12 +62,17 @@ async def get_next_task():
     except Exception as e:
         return False, f"Could not get task - {e}"
     
-async def main():
-    await init_pool()
-    success, message = await get_next_task()
-    await view_queue_table(5)
-    print(message)
-    await close_pool()
+async def view_tasks_table(num_rows: int = 10):
+    """
+    View the first `num_rows` rows from the jobs table.
+    """
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            f"SELECT * FROM task_queue ORDER BY id LIMIT $1;", num_rows
+        )
+        for row in rows:
+            print(dict(row))
     
 async def view_queue_table(num_rows: int = 10):
     """
@@ -117,6 +122,3 @@ async def abort_tasks_on_restart(task_type: str = "check_for_jobs"):
         return True, f"Marked {affected} '{task_type}' tasks as aborted via restart"
     except Exception as e:
         return False, f"Could not mark tasks as aborted - {e}"
-    
-if __name__ == "__main__":
-    asyncio.run(main())

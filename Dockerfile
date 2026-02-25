@@ -52,6 +52,7 @@ EXPOSE 8000
 
 # ✅ Ensure start.sh is executable + correct line endings
 RUN sed -i 's/\r$//' /app/start.sh && chmod +x /app/start.sh
+RUN sed -i 's/\r$//' /app/start.dev.sh && chmod +x /app/start.dev.sh
 
 CMD ["/app/start.sh"]
 

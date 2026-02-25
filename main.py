@@ -1,4 +1,4 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 import traceback
@@ -13,13 +13,25 @@ from nyx.browser import NyxBrowser
 from nyx.page import NyxPage
 
 from upwork_agent.bidder_agent import build_bidder_agent,call_proposal_generator_agent, Proposal
-from db_utils.db_pool import init_pool, close_pool
-from db_utils.access_db import add_proposal, create_proposals_table, create_jobs_table, get_job_by_url
-from db_utils.queue_manager import create_queue_table, enqueue_task, get_next_task, update_task_status, abort_tasks_on_restart
+from db.pool import init_pool, close_pool
+from db.proposals import add_proposal, create_proposals_table
+from db.jobs import create_jobs_table, get_job_by_url
+from db.auth import create_user_table
+from db.queue_manager import create_queue_table, enqueue_task, get_next_task, update_task_status, abort_tasks_on_restart
 from utils import generate_search_links
 from utils.prompts_archive import PromptArchive
 from rag_utils.embed_data import check_embeddings_exist, embed_documents, create_docs_from_csv, ensure_pgvector
+from security_utils.auth_utils import require_auth
 
+from api import (
+    auth_router,
+    jobs_router,
+    task_router,
+    proposals_router,
+    prompts_router
+)
+
+from state import AppState, get_app_state
 from upwork_agent.scrape_jobs import ScraperSession
 from upwork_agent.application import ApplicationSession
 
@@ -29,7 +41,6 @@ LOGIN_USERNAME = os.getenv("UPWORK_USERNAME")
 LOGIN_PASSWORD = os.getenv("UPWORK_PASSWORD")
 SECURITY_QUESTION_ANSWER = os.getenv("UPWORK_SECURITY_QUESTION_ANSWER")
 
-state = {}
 latest_urls_path = 'state_data/latest_links.pkl'
 if os.path.exists(latest_urls_path):
     print("Loading latest URLs from", latest_urls_path)
@@ -56,35 +67,31 @@ else:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    state:AppState = AppState()
     # Startup code
     browser:NyxBrowser = NyxBrowser()
     await browser.start()
-    state['browser'] = browser
+    state.browser = browser
     print("Browser started")
-    state["filter_urls"] = generate_search_links()
-    state["latest_urls"] = latest_urls
-    page:NyxPage = await state.get("browser").new_page()
-    state["page"] = page
+    state.filter_urls = generate_search_links()
+    state.latest_urls = latest_urls
+    page:NyxPage = await state.browser.new_page()
+    state.page = page
     if not check_embeddings_exist():
         embed_documents(create_docs_from_csv("data/proposals.csv"))
     await init_pool()
     print("Database pool initialized")
     await ensure_pgvector()
-    prompt_archive:PromptArchive = PromptArchive()
-    state["prompt_archive"] = prompt_archive
-    state["proposal_prompt_changed"] = True
-    await state["prompt_archive"].init()
+    state.proposal_prompt_changed = False
+    state.prompt_archive = PromptArchive()
+    await state.prompt_archive.init()
+    state.proposal_system_prompt = await state.prompt_archive.get_active_prompt("proposal")
     print("Prompt archive initialized")
-    state["bidder_agent"] = build_bidder_agent()
+    state.bidder_agent = build_bidder_agent()
     print("Bidder agent created")
-    proposal_table_status, msg = await create_proposals_table()
-    print(proposal_table_status, msg)
-    job_table_status, msg = await create_jobs_table()
-    print(job_table_status, msg)
-    task_queue_table_status, msg = await create_queue_table()
-    print(task_queue_table_status, msg)
     abort_status, msg = await abort_tasks_on_restart()
     print(abort_status, msg)
+    app.state.core = state
     worker_task = asyncio.create_task(worker_loop())
     print("Worker loop started")
     yield
@@ -93,9 +100,7 @@ async def lifespan(app: FastAPI):
     worker_task.cancel()
     await close_pool()
     print("Database pool closed")
-    await state['browser'].shutdown()
-
-state["last_url"] = ""
+    await state.browser.shutdown()
     
 app = FastAPI(
     title="Upwork API",
@@ -104,12 +109,19 @@ app = FastAPI(
     lifespan=lifespan
 )
 
+app.include_router(auth_router,prefix="/api")
+app.include_router(jobs_router,prefix="/api")
+app.include_router(task_router,prefix="/api")
+app.include_router(proposals_router, prefix="/api")
+app.include_router(prompts_router, prefix="/api")
+
 # CORS configuration
 origins = [
     "http://localhost",
     "http://localhost:8000",
     "http://localhost:5678",
     "http://127.0.0.1:5678",
+    "http://localhost:5173",
 ]
 
 app.add_middleware(
@@ -121,132 +133,34 @@ app.add_middleware(
 )
 
 
-
-@app.get("/enqueue_task")
-async def enqueue_task_api(task_type:str, payload = None, priority:int=0):
-    print(f"Enqueuing task: {task_type} with payload: {payload} and priority: {priority}")
-    status, message = await enqueue_task(task_type=task_type, payload=payload, priority=priority)
-    return {"status" : status, "message" : message}
+@app.get("/health")
+async def health_check():
+    return {"status": "ok"}
 
 async def check_for_jobs(task_id:int):
     session = ScraperSession(
             task_id=task_id,
-            page = state["page"], 
-            links_to_visit=state["filter_urls"], 
-            last_links=state["latest_urls"], 
+            page = app.state.core.page, 
+            links_to_visit=app.state.core.filter_urls, 
+            last_links=app.state.core.latest_urls, 
             username= LOGIN_USERNAME, 
             password=LOGIN_PASSWORD, 
             security_answer=SECURITY_QUESTION_ANSWER
         )
     await session.run()
-    
-@app.post("/update_proposal_prompt")
-async def update_proposal_prompt_api(prompt_text:str):
-    try:
-        new_version = await state["prompt_archive"].add_prompt("proposal", prompt_text)
-        state["proposal_prompt_changed"] = True
-        return {"status" : "Done", "value" : f"Prompt updated to version {new_version}"}
-    except Exception as e:
-        return {"status" : "Failed", "message" : str(e)}
-    
-@app.post("/get_active_proposal_prompt")
-async def get_active_proposal_prompt_api():
-    try:
-        prompt_text = await state["prompt_archive"].get_active_prompt("proposal")
-        if prompt_text:
-            return {"status" : "Done", "value" : prompt_text}
-        else:
-            return {"status" : "Failed", "message" : "No active prompt found."}
-    except Exception as e:
-        return {"status" : "Failed", "message" : str(e)}
-    
-@app.post("/list_proposal_prompt_versions")
-async def list_proposal_prompt_versions_api():
-    try:
-        versions = await state["prompt_archive"].list_versions("proposal")
-        output = ""
-        if len(versions):
-            for version in versions:
-                for key, value in version.items():
-                    output += f"{key} : {value}\n"
-                output += "\n"
-            return {"status" : "Done", "value" : output}
-        return {"status" : "Done", "value" : "No prompts added yet"}
-    except Exception as e:
-        return {"status" : "Failed", "message" : str(e)}
-    
-@app.post("/rollback_proposal_prompt")
-async def rollback_proposal_prompt_api(version:int):
-    try:
-        await state["prompt_archive"].rollback("proposal", version)
-        state["proposal_prompt_changed"] = True
-        return {"status" : "Done", "value" : f"Rolled back to {version}"}
-    except Exception as e:
-        return {"status" : "Failed", "message" : str(e)}
-    
-@app.post("/get_proposal_prompt")
-async def get_proposal_prompt_by_version_api(version:int):
-    try:
-        prompt_text = await state["prompt_archive"].get_prompt_by_version("proposal", version)
-        if prompt_text:
-            return {"status" : "Done", "value" : prompt_text}
-        else:
-            return {"status" : "Failed", "message" : "Prompt not found for the specified version."}
-    except Exception as e:
-        return {"status" : "Failed", "message" : str(e)}
-
-@app.post("/generate_proposal")
-async def generate_proposal_api(job_url:str):
-    try:
-        job_uuid, job_details = await get_job_by_url(job_url=job_url)
-        if not job_details:
-            return {"status" : "Failed", "message" : "Job details not found in database."}
-        job_type = job_details.get("job_type","Unknown")
-        print(f"Generating proposal for job type: {job_type}")
-        job_details = json.dumps(job_details)
-        print(f"Job Details: {job_details}")
-        if state.get("proposal_prompt_changed", True):
-            state["proposal_system_prompt"] = await state["prompt_archive"].get_active_prompt("proposal")
-            state["proposal_prompt_changed"] = False
-        proposal, proposal_model = await call_proposal_generator_agent(state["bidder_agent"], job_details, proposal_system_prompt=state["proposal_system_prompt"])
-        payload = {
-            "status" : "Done",
-            "job_type" : job_type,
-            "job_url" : job_url,
-            "proposal" : proposal
-        }
-        response = await add_proposal(uuid = job_uuid,job_url=job_url, job_type=job_type, proposal = proposal_model, applied=False)
-        if response:
-            return payload
-        else:
-            return response 
-    except Exception as e:
-        traceback.print_exc()
-        return {"status" : "Failed", "message" : str(e)}
-    
 
 async def apply_for_job(task_id:int,job_url: str, human:str = "Unable to verify"):
     session = ApplicationSession(
-            task_id=task_id,
-            page = state["page"], 
+            task_id = task_id,
+            page = app.state.core.page, 
             job_url=job_url,
             username= LOGIN_USERNAME, 
             password=LOGIN_PASSWORD, 
-            security_answer=SECURITY_QUESTION_ANSWER , 
+            security_answer=SECURITY_QUESTION_ANSWER, 
             human=human
         )
     await session.run()
             
-        
-def question_answer_parser(proposal:Proposal):
-    q_a_dict = {}
-    for question_and_answer in proposal.questions_and_answers:
-        question = re.sub(r"^\d+\.\s*", "", question_and_answer.question.strip())
-        answer = question_and_answer.answer.strip()
-        q_a_dict[question] = answer
-    return q_a_dict
-
-
 async def worker_loop():
     while True:
         try:
@@ -263,17 +177,12 @@ async def worker_loop():
                 elif task_type == 'apply_for_job':
                     payload_string = task.get("payload","")
                     payload = json.loads(payload_string) if payload_string else {}
-                    job_url = payload.get("job_url", "")
+                    job_url = payload.get("job_url")
+                    print(f"Job URL from task payload: {job_url}")
                     if job_url:
                         await apply_for_job(task_id=task_id,job_url=job_url)
-            else:
-                print("No tasks in queue, waiting...")
         except Exception as e:
             print(f"Error in worker loop: {e}")
             traceback.print_exc()
         finally:
             await asyncio.sleep(3)
-
-if __name__ == "__main__":
-    hehe = asyncio.run(question_answer_parser("https://www.upwork.com/jobs/~021970706874169818481?link=new_job&frkscc=NYf13dCiTalJ"))
-    print(hehe)

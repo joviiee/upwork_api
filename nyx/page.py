@@ -63,7 +63,8 @@ class NyxPage:
                     async with self._page.expect_navigation():
                         await self.nyx_cursor.cursor.click(selector=selector)
         except Exception as e:
-            print(f"Warning: Could not perform visual click: {e}")
+            print(f"Warning: Could not perform nyx visual click: {e}")
+            raise e
             
     async def scroll_by(self, scroll_length:int, randomness:bool = True):
         if randomness:
@@ -128,6 +129,15 @@ class NyxPage:
             return True if element else False
         except Exception as e:
             print(f"Warning: Could not check for element: {e}")
+            return False
+        
+    async def wait_for_element(self, selector:Union[str, ElementHandle], timeout:int = 15000) -> bool:
+        """Wait for an element to appear on the page"""
+        try:
+            await self._page.wait_for_selector(selector=selector, timeout=timeout, state="visible") if isinstance(selector, str) else await selector.wait_for_element_state("visible", timeout=timeout)
+            return True
+        except Exception as e:
+            print(f"Warning: Could not wait for element: {e}")
             return False
             
     async def get_text_content(self, selector:Union[str, ElementHandle]) -> Optional[str]:

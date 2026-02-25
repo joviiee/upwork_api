@@ -62,6 +62,7 @@ class Session:
             if login_page:
                 await self.page.fill_field_and_enter('#login_username', self.username)
                 await asyncio.sleep(3)
+                await self.page.wait_for_element('#login_password')
                 if remember_me:
                     await self.page.click('#login_rememberme')
                 await self.page.fill_field_and_enter('#login_password', self.password)
@@ -72,11 +73,11 @@ class Session:
                 self.update_status("Success", "Already logged in")
                 return True
             else:
-                await self.send_status("Failed", "Login page not found")
+                # await self.send_status("Failed", "Login page not found")
                 self.print_status()
                 return False
         except Exception as e:
-            await self.send_status("Failed", f"Error during login: {e}")
+            # await self.send_status("Failed", f"Error during login: {e}")
             self.print_status()
             await self.page.goto(home_url)
             return False
