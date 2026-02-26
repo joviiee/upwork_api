@@ -33,7 +33,7 @@ async def generate_proposal_api(job_url:str, user = Depends(require_auth),state 
 @router.get("/get_proposal")
 async def get_proposal_api(job_url: str, user = Depends(require_auth)):
     try:
-        proposal, job_type, profile, applied = await get_proposal_by_url(job_url)
+        proposal, job_type, profile, applied, approved_by = await get_proposal_by_url(job_url)
         print(proposal, job_type, profile)
         if not proposal:
             raise HTTPException(status_code=404, detail="Proposal not found for this job.")
@@ -43,7 +43,8 @@ async def get_proposal_api(job_url: str, user = Depends(require_auth)):
             "job_type": job_type,
             "profile": profile,
             "proposal": proposal.model_dump(),
-            "applied": applied
+            "applied": applied,
+            "approved_by": approved_by
         }
     except HTTPException:
         raise

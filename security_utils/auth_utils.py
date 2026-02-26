@@ -2,8 +2,9 @@ from datetime import datetime, timedelta, timezone
 from jose import jwt, JWTError
 from passlib.context import CryptContext
 from fastapi import HTTPException, Cookie
+import os
 
-SECRET_KEY = "CHANGE_ME_NOW"
+SECRET_KEY = os.getenv("SECRET_KEY", "CHANGE_ME_NOW") #TODO: Move to env variable and make it more secure in production
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 8  # 8 hours
 

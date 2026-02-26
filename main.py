@@ -168,7 +168,8 @@ async def worker_loop():
             if status:
                 task_id = task['id']
                 task_type = task['task_type']
-                print(f"Processing task: {task_type}")
+                user = task['username']
+                print(f"Processing task: {task_type} for user: {user}")
                 for key, value in task.items():
                     print(f"{key}: {value}")
                 if task_type == 'check_for_jobs':
@@ -180,7 +181,7 @@ async def worker_loop():
                     job_url = payload.get("job_url")
                     print(f"Job URL from task payload: {job_url}")
                     if job_url:
-                        await apply_for_job(task_id=task_id,job_url=job_url)
+                        await apply_for_job(task_id=task_id,job_url=job_url, human=user)
         except Exception as e:
             print(f"Error in worker loop: {e}")
             traceback.print_exc()

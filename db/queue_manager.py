@@ -28,15 +28,15 @@ async def create_queue_table():
     except Exception as e:
         return False, f"Could not create the task_queue table - {e}"
     
-async def enqueue_task(task_type:str, payload=None, priority:int=0):
+async def enqueue_task(task_type:str, username:str, payload=None, priority:int=0):
     try:
-        print(f" from db : Enqueueing task: {task_type} with payload: {payload} and priority: {priority}")
+        print(f" from db : Enqueueing task: {task_type} for user: {username} with payload: {payload} and priority: {priority}")
         pool = await get_pool()
         async with pool.acquire() as conn:
             await conn.execute("""
-                INSERT INTO task_queue (task_type, payload, priority)
-                VALUES ($1, $2, $3);
-            """, task_type, payload, priority)
+                INSERT INTO task_queue (task_type, username, payload, priority)
+                VALUES ($1, $2, $3, $4);
+            """, task_type, username, payload, priority)
         return True, "Task enqueued successfully"
     except Exception as e:
         return False, f"Could not enqueue task - {e}"

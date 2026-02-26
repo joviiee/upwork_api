@@ -110,7 +110,7 @@ class ApplicationSession(Session):
     
     async def get_proposal(self):
         try:
-            existing_proposal, job_type, profile, _ = await get_proposal_by_url(self.job_url)
+            existing_proposal, job_type, profile, applied, approved_by = await get_proposal_by_url(self.job_url)
             self.proposal = existing_proposal
             if existing_proposal:
                 self.proposal_type = job_type

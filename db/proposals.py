@@ -81,11 +81,12 @@ async def get_proposal_by_url(job_url: str):
                 profile = row["profile"]
                 job_type = row["job_type"]
                 applied = row["applied"]
-                return proposal, job_type, profile, applied
-            return None, None, None, None
+                approved_by = row["approved_by"]
+                return proposal, job_type, profile, applied, approved_by
+            return None, None, None, None, None
     except Exception as e:
         print(f"Could not retrieve proposal - {e}")
-        return None, None, None, None
+        return None, None, None, None, None
 
 async def update_proposal_by_url(job_url: str, updates: dict):
     """
