@@ -35,7 +35,7 @@ from state import AppState, get_app_state
 from upwork_agent.scrape_jobs import ScraperSession
 from upwork_agent.application import ApplicationSession
 
-load_dotenv()
+ALLOWED_ORIGINS = os.getenv("ORIGINS", "http://localhost,http://localhost:8000,http://localhost:5678,http://127.0.0.1:5678,http://localhost:5173").split(",")
 
 LOGIN_USERNAME = os.getenv("UPWORK_USERNAME")
 LOGIN_PASSWORD = os.getenv("UPWORK_PASSWORD")
@@ -115,18 +115,9 @@ app.include_router(task_router,prefix="/api")
 app.include_router(proposals_router, prefix="/api")
 app.include_router(prompts_router, prefix="/api")
 
-# CORS configuration
-origins = [
-    "http://localhost",
-    "http://localhost:8000",
-    "http://localhost:5678",
-    "http://127.0.0.1:5678",
-    "http://localhost:5173",
-]
-
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
